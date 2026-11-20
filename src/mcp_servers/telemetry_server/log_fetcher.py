@@ -4,13 +4,18 @@ import time
 from pathlib import Path
 from e2b_code_interpreter import Sandbox
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 def stream_logs_to_sandbox(sandbox_id: str, minutes: int = 15, level_filter: str | None = None) -> dict:
-    log_path = Path(os.getenv("TARGET_LOG_PATH", "testbed_logs/app.jsonl"))
+    raw_path = os.getenv("TARGET_LOG_PATH", "testbed/logs/app.jsonl")
+    log_path = Path(raw_path) if Path(raw_path).is_absolute() else (REPO_ROOT / raw_path)
+
     if not log_path.exists():
-        return {"error": f"Log file not found at {log_path}. Ensure testbed is running."}
+        return {"error": f"Log file not found at {log_path}."}
 
     cutoff = time.time() - (minutes * 60)
-    matched_lines = list[str] = []
+    matched_lines: list[str] = []
     error_count = 0
 
     with log_path.open("r", encoding="utf-8") as f:
@@ -31,8 +36,8 @@ def stream_logs_to_sandbox(sandbox_id: str, minutes: int = 15, level_filter: str
                 error_count += 1
             matched_lines.append(line)
 
-    remote_path = "/workspace/logs.jsonl"
-    payload = "\n".join(matched_lines)
+    remote_path = "/home/user/logs.jsonl"
+    payload = "\n".join(matched_lines) if matched_lines else ""
 
     sbx = Sandbox.connect(sandbox_id)
     sbx.files.write(remote_path, payload)
@@ -43,5 +48,5 @@ def stream_logs_to_sandbox(sandbox_id: str, minutes: int = 15, level_filter: str
         "total_lines": len(matched_lines),
         "error_count": error_count,
         "sample_schema": ["ts", "level", "event", "sku", "latency_ms", "error"],
-        "instruction": "Use run_diagnostic_python to query /workspace/logs.jsonl via pandas or duckdb.",
+        "instruction": f"Use run_diagnostic_python to analyze {remote_path} via json or pandas.",
     }
