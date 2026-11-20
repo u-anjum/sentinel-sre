@@ -227,3 +227,4 @@ __marimo__/
 testbed/logs/*
 !testbed/logs/.gitkeep
 evals/reports/*.json
+sentinel_state.db

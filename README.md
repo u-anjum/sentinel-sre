@@ -1,13 +1,20 @@
 # sentinel-sre
 
-Autonomous Site Reliability Engineering (SRE) triage agent built from first principles—combining a custom Model Context Protocol (MCP) telemetry server, isolated E2B Firecracker sandboxes for log analysis, and a raw Python control loop powered by Gemini.
+Autonomous Site Reliability Engineering (SRE) triage and remediation agent built from first principles—combining a custom Model Context Protocol (MCP) telemetry server, isolated E2B Firecracker sandboxes for log analysis, a raw Python control loop powered by Gemini, and a FastAPI Human-in-the-Loop (HITL) control plane.
 
 ## Architecture
 
-```text
-[Alert Payload]
-       │
-       ▼
+```
+[Monitoring / Alertmanager]
+            │ POST /webhooks/alert
+            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Control Plane API (src/api) & SQLite Store (src/db)      │
+│  • Persists incident lifecycle (TRIAGING → AWAITING_APPROVAL)│
+│  • Gates destructive remediation behind /approve          │
+└───────────────────────────┬───────────────────────────────┘
+                            │ async background triage
+                            ▼
 ┌───────────────────────────────────────────────────────────┐
 │  Agent Core (src/agent_core)                              │
 │  • Pure-Python async control loop (Gemini + Pydantic v2)  │
@@ -22,21 +29,21 @@ Autonomous Site Reliability Engineering (SRE) triage agent built from first prin
 │  • fetch_logs_to_sandbox ─────┼──▶│    logs.jsonl         │
 │  • execute_terminate_pid*     │   │  • Runs diagnostic    │
 └───────────────┬───────────────┘   │    Python scripts     │
-                │ read-only SQL     └───────────────────────┘
+                │ SQL               └───────────────────────┘
                 ▼
 ┌───────────────────────────────┐
 │  Target Testbed (testbed/)    │
 │  • FastAPI + PostgreSQL 16    │
 │  • Reproducible chaos scripts │
 └───────────────────────────────┘
-*Gated behind Human-in-the-Loop (HITL) approval.
+*Executed only after explicit human sign-off via /incidents/{id}/approve.
 ```
 
 ## Prerequisites
 
-- **Python 3.12+** & [`uv`](https://docs.astral.sh/uv/)
-- **Docker Desktop** (Linux containers)
-- **API Keys:** `GEMINI_API_KEY` and `E2B_API_KEY`
+* **Python 3.12+** & [`uv`](https://docs.astral.sh/uv/)
+* **Docker Desktop** (Linux containers)
+* **API Keys:** `GEMINI_API_KEY` and `E2B_API_KEY`
 
 ## Quickstart
 
@@ -59,38 +66,67 @@ cd ..
 
 See [`testbed/README.md`](testbed/README.md) for testbed endpoints and teardown commands.
 
-### 3. Run an End-to-End Chaos Triage
+### 3. Run the Control Plane & HITL Workflow
 
-**Terminal 1 — Inject a database row-lock bottleneck:**
+**Terminal 1 — Start the FastAPI Control Plane:**
+
+```bash
+uv run uvicorn api.main:app --port 8000
+```
+
+**Terminal 2 — Inject a database row-lock bottleneck:**
 
 ```bash
 uv run python testbed/chaos/inject_db_lock.py
 ```
 
-**Terminal 2 — Trigger the autonomous triage agent (3–5 seconds later):**
+**Terminal 3 — Trigger an alert webhook, inspect triage, and approve remediation:**
 
 ```bash
-uv run python -m agent_core.loop
+# 1. Trigger alert webhook
+curl -X POST "http://localhost:8000/webhooks/alert" \
+  -H "Content-Type: application/json" \
+  -d '{"alert_name":"HighOrderFailureRate","service":"target-api","symptom":"POST /orders returning 500 errors"}'
+
+# 2. Inspect structured IncidentReport (replace <incident_id>)
+curl "http://localhost:8000/incidents/<incident_id>"
+
+# 3. Approve remediation (terminates blocking Postgres PID via MCP)
+curl -X POST "http://localhost:8000/incidents/<incident_id>/approve" \
+  -H "Content-Type: application/json" \
+  -d '{"approved":true,"operator":"oncall-engineer","comment":"Verified blocker PID"}'
 ```
 
-The agent inspects live PostgreSQL lock waits via MCP, streams application logs into an isolated E2B sandbox, runs diagnostic Python analysis, and outputs a validated `IncidentReport` JSON identifying the blocking PID and proposed remediation.
+## Automated Chaos Eval Suite
 
-## Standalone MCP Inspector
-
-To test the telemetry MCP server tools interactively without the LLM loop:
+Run the end-to-end evaluation harness to inject live faults, benchmark root-cause accuracy and exact PID precision, and write a JSON report to `evals/reports/`:
 
 ```bash
-uv run mcp dev src/mcp_servers/telemetry_server/server.py
+uv run python evals/run_evals.py
 ```
+
+## Standalone CLI & MCP Inspector
+
+* **Run the triage loop directly without FastAPI:**
+  ```bash
+  uv run python -m agent_core.loop
+  ```
+* **Inspect MCP telemetry tools interactively:**
+  ```bash
+  uv run mcp dev src/mcp_servers/telemetry_server/server.py
+  ```
 
 ## Project Layout
 
-```text
+```
 sentinel-sre/
 ├── src/
 │   ├── agent_core/                 # Raw Gemini control loop, E2B wrapper, Pydantic schemas
+│   ├── api/                        # FastAPI webhook receiver & HITL approval endpoints
+│   ├── db/                         # SQLite incident state & audit persistence
 │   └── mcp_servers/
 │       └── telemetry_server/       # Custom MCP 2.x server (DB health, log streaming, PID exec)
+├── evals/                          # Automated chaos evaluation harness & reports
 ├── testbed/                        # Target FastAPI + Postgres stack & chaos scripts
 ├── pyproject.toml
 └── README.md
