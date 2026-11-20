@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Sentinel-SRE runtime artifacts
+*.jsonl
+testbed/logs/*
+!testbed/logs/.gitkeep
+evals/reports/*.json
